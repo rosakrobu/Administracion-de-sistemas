@@ -5,7 +5,6 @@
 #  Alumna: Rosa Karina Rosas Burgueño
 # ============================================================
 
-# ── Paleta de colores ──────────────────────────────────────
 C_OK='\033[0;32m'       # verde
 C_WARN='\033[0;33m'     # amarillo
 C_ERR='\033[0;31m'      # rojo
@@ -13,14 +12,9 @@ C_INFO='\033[0;36m'     # cian
 C_BOLD='\033[1;37m'     # blanco brillante
 C_RST='\033[0m'         # reset
 
-# ── Rutas del sistema ──────────────────────────────────────
 CONF_DHCP="/etc/dhcpd.conf"
 LEASES_FILE="/var/lib/dhcp/dhcpd.leases"
 SERVICIO="dhcpd4"
-
-# ══════════════════════════════════════════════════════════
-#  UTILIDADES
-# ══════════════════════════════════════════════════════════
 
 titulo() {
     echo -e "\n${C_BOLD}╔══════════════════════════════════════╗${C_RST}"
@@ -33,14 +27,12 @@ msg_err()  { echo -e "  ${C_ERR}[✘]${C_RST} $1"; }
 msg_warn() { echo -e "  ${C_WARN}[!]${C_RST} $1"; }
 msg_info() { echo -e "  ${C_INFO}[→]${C_RST} $1"; }
 
-# ── Convierte IP a entero de 32 bits ──────────────────────
 ip_a_entero() {
     local ip="$1"
     IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
     echo $(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
 }
 
-# ── Calcula diferencia entre dos IPs ──────────────────────
 diferencia_ips() {
     local e1 e2
     e1=$(ip_a_entero "$1")
@@ -48,7 +40,6 @@ diferencia_ips() {
     echo $(( e2 - e1 ))
 }
 
-# ── Mascara en bits → notacion decimal ────────────────────
 bits_a_mascara() {
     local bits=$1
     local mask=0
@@ -58,7 +49,6 @@ bits_a_mascara() {
     echo "$(( (mask >> 24) & 255 )).$(( (mask >> 16) & 255 )).$(( (mask >> 8) & 255 )).$(( mask & 255 ))"
 }
 
-# ── Mascara decimal → bits CIDR ───────────────────────────
 mascara_a_bits() {
     local masc="$1"
     IFS='.' read -r a b c d <<< "$masc"
@@ -73,7 +63,6 @@ mascara_a_bits() {
     echo $bits
 }
 
-# ── Sugiere mascara segun tamaño de rango ─────────────────
 sugerir_mascara() {
     local rango=$1
     local bits=32
@@ -84,10 +73,6 @@ sugerir_mascara() {
     done
     bits_a_mascara $bits
 }
-
-# ══════════════════════════════════════════════════════════
-#  VALIDACIONES
-# ══════════════════════════════════════════════════════════
 
 es_ip_valida() {
     local ip="$1"
@@ -148,10 +133,6 @@ ips_misma_red() {
     msg_err "Las IPs no pertenecen a la misma red con la mascara indicada."
     return 1
 }
-
-# ══════════════════════════════════════════════════════════
-#  FUNCION: VERIFICAR / INSTALAR
-# ══════════════════════════════════════════════════════════
 
 verificar_paquete() {
     titulo "Verificacion de Paqueteria DHCP"
@@ -219,18 +200,12 @@ instalar_paquete() {
     fi
 }
 
-# ══════════════════════════════════════════════════════════
-#  FUNCION: CONFIGURAR (INTERACTIVO)
-# ══════════════════════════════════════════════════════════
-
 configurar_servidor() {
     titulo "Configuracion Dinamica del Servidor DHCP"
 
-    # -- Nombre del ambito --
     read -rp "  Nombre descriptivo del ambito/scope: " nombre_scope
     [[ -z "$nombre_scope" ]] && nombre_scope="Mi_Red_DHCP"
 
-    # -- Mascara --
     local mascara="" uso_mascara_manual=false
     while true; do
         read -rp "  Mascara de subred (Enter = calcular automaticamente): " mascara
@@ -242,14 +217,12 @@ configurar_servidor() {
         fi
     done
 
-    # -- IP Inicial --
     local ip_inicio=""
     while true; do
         read -rp "  IP de inicio del rango: " ip_inicio
         es_ip_valida "$ip_inicio" && break
     done
 
-    # -- IP Final --
     local ip_fin=""
     while true; do
         read -rp "  IP de fin del rango: " ip_fin
@@ -270,7 +243,6 @@ configurar_servidor() {
         fi
     done
 
-    # -- Lease time --
     local lease_time=""
     while true; do
         read -rp "  Tiempo de concesion en segundos [600]: " lease_time
@@ -279,7 +251,6 @@ configurar_servidor() {
         msg_err "Ingrese un numero entero positivo."
     done
 
-    # -- Gateway --
     local gateway=""
     while true; do
         read -rp "  Puerta de enlace/gateway (Enter para omitir): " gateway
@@ -291,7 +262,6 @@ configurar_servidor() {
         fi
     done
 
-    # -- DNS Primario --
     local dns1=""
     while true; do
         read -rp "  DNS primario (Enter para omitir): " dns1
@@ -299,7 +269,6 @@ configurar_servidor() {
         es_ip_valida "$dns1" && break
     done
 
-    # -- DNS Alternativo --
     local dns2=""
     if [[ -n "$dns1" ]]; then
         while true; do
@@ -309,13 +278,11 @@ configurar_servidor() {
         done
     fi
 
-    # -- Interfaz de red --
     echo -e "\n  ${C_WARN}Interfaces de red disponibles:${C_RST}"
     ip -br link show | grep -v "^lo" | awk '{printf "    %-12s %s\n", $1, $3}'
     local interfaz=""
     read -rp "  Interfaz a usar para el servidor DHCP: " interfaz
 
-    # -- Calcular red y broadcast --
     IFS='.' read -r a b c d <<< "$ip_inicio"
     IFS='.' read -r ma mb mc md <<< "$mascara"
     local dir_red="$((a & ma)).$((b & mb)).$((c & mc)).$((d & md))"
@@ -323,7 +290,6 @@ configurar_servidor() {
     local cidr
     cidr=$(mascara_a_bits "$mascara")
 
-    # -- Resumen --
     echo -e "\n${C_BOLD}  ┌─── Resumen de configuracion ─────────────────┐${C_RST}"
     echo -e "  │  Scope      : ${C_OK}$nombre_scope${C_RST}"
     echo -e "  │  Red        : ${C_OK}$dir_red/$cidr${C_RST}"
@@ -354,11 +320,6 @@ _escribir_configuracion() {
     msg_info "Generando archivo $CONF_DHCP ..."
 
     sudo tee "$CONF_DHCP" > /dev/null <<DHCPCONF
-# ──────────────────────────────────────────────────
-#  Servidor DHCP - Arch Linux
-#  Scope: $scope
-#  Generado por dhcp_arch.sh
-# ──────────────────────────────────────────────────
 
 default-lease-time $lease;
 max-lease-time $(( lease * 2 ));
@@ -378,11 +339,9 @@ $(  if [[ -n "$dns1" && -n "$dns2" ]]; then
 }
 DHCPCONF
 
-    # Configurar interfaz en /etc/conf.d/dhcpd
     msg_info "Configurando interfaz '$iface' en /etc/conf.d/dhcpd ..."
     sudo bash -c "echo 'DHCPD_ARGS=\"-4 -pf /run/dhcpd.pid\"' > /etc/conf.d/dhcpd"
 
-    # Asignar IP estatica al servidor en la interfaz
     local ip_servidor
     ip_servidor=$(echo "$ip_i" | awk -F. '{print $1"."$2"."$3"."($4-1)}')
     [[ $(echo "$ip_i" | awk -F. '{print $4}') -le 1 ]] && ip_servidor="$red" && ip_servidor="${red%.*}.1"
@@ -392,7 +351,6 @@ DHCPCONF
     sudo ip addr add "$ip_servidor/$cidr" dev "$iface"
     sudo ip link set "$iface" up
 
-    # Habilitar y reiniciar servicio
     msg_info "Habilitando y reiniciando $SERVICIO ..."
     sudo systemctl enable "$SERVICIO" --quiet
     sudo systemctl restart "$SERVICIO"
@@ -413,7 +371,7 @@ configurar_predeterminado() {
     msg_info "Aplicando configuracion de la practica: 192.168.100.0/24"
 
     sudo tee "$CONF_DHCP" > /dev/null <<'PREDEF'
-# Configuracion DHCP - Practica 2
+
 default-lease-time 600;
 max-lease-time 1200;
 authoritative;
@@ -434,10 +392,6 @@ PREDEF
         && msg_ok "Configuracion predeterminada aplicada y servicio activo." \
         || msg_err "Servicio no inicio. Revise: journalctl -xeu $SERVICIO"
 }
-
-# ══════════════════════════════════════════════════════════
-#  FUNCION: MONITOREO
-# ══════════════════════════════════════════════════════════
 
 monitorear() {
     titulo "Modulo de Monitoreo DHCP"
@@ -529,10 +483,6 @@ monitorear() {
     esac
 }
 
-# ══════════════════════════════════════════════════════════
-#  FUNCION: ESTADO Y CONTROL DEL SERVICIO
-# ══════════════════════════════════════════════════════════
-
 estado_servicio() {
     titulo "Estado del Servidor DHCP"
     sudo systemctl status "$SERVICIO" --no-pager -l
@@ -569,10 +519,6 @@ mostrar_configuracion() {
         || msg_warn "dhcpd4 inactivo"
 }
 
-# ══════════════════════════════════════════════════════════
-#  MENU DE AYUDA
-# ══════════════════════════════════════════════════════════
-
 mostrar_ayuda() {
     echo -e "\n${C_BOLD}Uso:${C_RST}  sudo $0 [OPCION]\n"
     echo -e "  ${C_INFO}-v, --verificar${C_RST}      Verifica si el paquete dhcp esta instalado"
@@ -584,10 +530,6 @@ mostrar_ayuda() {
     echo -e "  ${C_INFO}-k, --config${C_RST}         Muestra la configuracion actual en $CONF_DHCP"
     echo -e "  ${C_INFO}-h, --ayuda${C_RST}          Muestra este mensaje\n"
 }
-
-# ══════════════════════════════════════════════════════════
-#  PUNTO DE ENTRADA
-# ══════════════════════════════════════════════════════════
 
 case "$1" in
     -v | --verificar)   verificar_paquete ;;
