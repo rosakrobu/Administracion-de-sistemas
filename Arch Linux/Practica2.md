@@ -86,18 +86,18 @@ configurar_dhcp() {
     echo ""
 
     # Pedir nombre del scope
-    read -rp "Nombre del scope (ej: MiRed): " SCOPE
+    read -rp "Nombre del ámbito (scope): " SCOPE
     if [[ -z "$SCOPE" ]]; then SCOPE="MiServidor"; fi
 
     # Pedir IP inicio del rango
     while true; do
-        read -rp "IP de inicio del rango (ej: 192.168.100.50): " IP_INICIO
+        read -rp "IP de inicio del rango: " IP_INICIO
         validar_ip "$IP_INICIO" && break
     done
 
     # Pedir IP fin del rango
     while true; do
-        read -rp "IP de fin del rango   (ej: 192.168.100.150): " IP_FIN
+        read -rp "IP de fin del rango: " IP_FIN
         if validar_ip "$IP_FIN"; then
             # Verificar que fin sea mayor que inicio
             IFS='.' read -r a1 b1 c1 d1 <<< "$IP_INICIO"
@@ -114,7 +114,7 @@ configurar_dhcp() {
 
     # Pedir tiempo de concesion
     while true; do
-        read -rp "Tiempo de concesion en segundos (ej: 600): " LEASE
+        read -rp "Tiempo de concesion en segundos: " LEASE
         if [[ "$LEASE" =~ ^[0-9]+$ && "$LEASE" -gt 0 ]]; then
             break
         else
@@ -157,14 +157,15 @@ configurar_dhcp() {
     RED="${a}.${b}.${c}.0"
     MASCARA="255.255.255.0"
     BROADCAST="${a}.${b}.${c}.255"
-    IP_SERVIDOR="${a}.${b}.${c}.$((d - 1))"
+    IP_SERVIDOR="$IP_INICIO"
+    IP_RANGO_INICIO="${a}.${b}.${c}.$((d + 1))"
     if [[ $((d - 1)) -le 0 ]]; then IP_SERVIDOR="${a}.${b}.${c}.1"; fi
 
     # Mostrar resumen antes de aplicar
     echo ""
-    echo "==============================="
+    echo "-------------------------------"
     echo "   RESUMEN DE CONFIGURACION"
-    echo "==============================="
+    echo "-------------------------------"
     echo "  Scope     : $SCOPE"
     echo "  Red       : $RED/24"
     echo "  Mascara   : $MASCARA"
@@ -174,7 +175,7 @@ configurar_dhcp() {
     echo "  DNS       : ${DNS:-"(sin DNS)"}"
     echo "  Interfaz  : $INTERFAZ"
     echo "  IP servidor: $IP_SERVIDOR"
-    echo "==============================="
+    echo "--------------------------------"
     echo ""
     read -rp "¿Aplicar esta configuracion? (s/n): " CONF
     if [[ ! "$CONF" =~ ^[Ss]$ ]]; then
@@ -191,7 +192,7 @@ max-lease-time $(( LEASE * 2 ));
 authoritative;
 
 subnet $RED netmask $MASCARA {
-    range $IP_INICIO $IP_FIN;
+    range $IP_RANGO_INICIO $IP_FIN;
     option subnet-mask $MASCARA;
     option broadcast-address $BROADCAST;
 $(  [[ -n "$GATEWAY" ]] && echo "    option routers $GATEWAY;")
