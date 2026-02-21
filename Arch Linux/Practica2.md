@@ -32,7 +32,6 @@ instalar_dhcp() {
     echo ""
     echo "--- Instalacion de DHCP ---"
 
-    # Si ya esta instalado no hace nada
     if pacman -Q dhcp &>/dev/null; then
         ok "dhcp ya esta instalado, no se necesita hacer nada."
         echo ""
@@ -55,13 +54,11 @@ instalar_dhcp() {
 validar_ip() {
     local ip="$1"
 
-    # Verificar formato X.X.X.X
     if ! [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
         err "Formato invalido. Usa el formato: X.X.X.X"
         return 1
     fi
 
-    # Verificar que cada numero este entre 0 y 255
     IFS='.' read -r a b c d <<< "$ip"
     for num in $a $b $c $d; do
         if [[ $num -lt 0 || $num -gt 255 ]]; then
@@ -70,7 +67,6 @@ validar_ip() {
         fi
     done
 
-    # No puede ser 0.0.0.0 ni 255.255.255.255
     if [[ "$ip" == "0.0.0.0" || "$ip" == "255.255.255.255" ]]; then
         err "Esa IP no es valida."
         return 1
@@ -85,21 +81,17 @@ configurar_dhcp() {
     echo "--- Configuracion del servidor DHCP ---"
     echo ""
 
-    # Pedir nombre del scope
     read -rp "Nombre del ámbito (scope): " SCOPE
     if [[ -z "$SCOPE" ]]; then SCOPE="MiServidor"; fi
 
-    # Pedir IP inicio del rango
     while true; do
         read -rp "IP de inicio del rango: " IP_INICIO
         validar_ip "$IP_INICIO" && break
     done
 
-    # Pedir IP fin del rango
     while true; do
         read -rp "IP de fin del rango: " IP_FIN
         if validar_ip "$IP_FIN"; then
-            # Verificar que fin sea mayor que inicio
             IFS='.' read -r a1 b1 c1 d1 <<< "$IP_INICIO"
             IFS='.' read -r a2 b2 c2 d2 <<< "$IP_FIN"
             N1=$(( a1*16777216 + b1*65536 + c1*256 + d1 ))
@@ -112,7 +104,6 @@ configurar_dhcp() {
         fi
     done
 
-    # Pedir tiempo de concesion
     while true; do
         read -rp "Tiempo de concesion en segundos: " LEASE
         if [[ "$LEASE" =~ ^[0-9]+$ && "$LEASE" -gt 0 ]]; then
@@ -122,7 +113,6 @@ configurar_dhcp() {
         fi
     done
 
-    # Pedir Gateway (opcional)
     while true; do
         read -rp "Gateway/puerta de enlace (Enter para omitir): " GATEWAY
         if [[ -z "$GATEWAY" ]]; then
@@ -133,7 +123,6 @@ configurar_dhcp() {
         fi
     done
 
-    # Pedir DNS (opcional)
     while true; do
         read -rp "DNS principal (Enter para omitir): " DNS
         if [[ -z "$DNS" ]]; then
@@ -144,16 +133,13 @@ configurar_dhcp() {
         fi
     done
 
-    # Mostrar interfaces de red disponibles
     echo ""
     info "Interfaces de red disponibles:"
     ip -br link show | grep -v "^lo"
     echo ""
     read -rp "Nombre de la interfaz para DHCP (ej: enp0s8): " INTERFAZ
 
-    # Calcular la direccion de red (AND bit a bit)
     IFS='.' read -r a b c d     <<< "$IP_INICIO"
-    # Usamos mascara /24 por defecto para redes clase C
     RED="${a}.${b}.${c}.0"
     MASCARA="255.255.255.0"
     BROADCAST="${a}.${b}.${c}.255"
@@ -161,7 +147,6 @@ configurar_dhcp() {
     IP_RANGO_INICIO="${a}.${b}.${c}.$((d + 1))"
     if [[ $((d - 1)) -le 0 ]]; then IP_SERVIDOR="${a}.${b}.${c}.1"; fi
 
-    # Mostrar resumen antes de aplicar
     echo ""
     echo "-------------------------------"
     echo "   RESUMEN DE CONFIGURACION"
@@ -183,7 +168,6 @@ configurar_dhcp() {
         return
     fi
 
-    # --- Crear archivo de configuracion DHCP ---
     info "Creando /etc/dhcpd.conf ..."
     cat > /etc/dhcpd.conf << EOF
 # Configuracion DHCP - $SCOPE
@@ -201,21 +185,18 @@ $(  [[ -n "$DNS"     ]] && echo "    option domain-name-servers $DNS;")
 EOF
     ok "Archivo /etc/dhcpd.conf creado."
 
-    # --- Configurar interfaz de red ---
     info "Configurando interfaz $INTERFAZ con IP $IP_SERVIDOR ..."
     ip addr flush dev "$INTERFAZ" 2>/dev/null
     ip addr add "$IP_SERVIDOR/24" dev "$INTERFAZ"
     ip link set "$INTERFAZ" up
     ok "Interfaz configurada."
 
-    # --- Crear archivo de leases si no existe ---
     if [[ ! -f /var/lib/dhcp/dhcpd.leases ]]; then
         mkdir -p /var/lib/dhcp
         touch /var/lib/dhcp/dhcpd.leases
         ok "Archivo de leases creado."
     fi
 
-    # --- Crear archivo de configuracion del servicio ---
     info "Configurando servicio dhcpd4 para la interfaz $INTERFAZ ..."
     mkdir -p /etc/systemd/system/dhcpd4.service.d
     cat > /etc/systemd/system/dhcpd4.service.d/interface.conf << EOF
@@ -224,7 +205,6 @@ ExecStart=
 ExecStart=/usr/bin/dhcpd -4 -q -cf /etc/dhcpd.conf -pf /run/dhcpd4/dhcpd.pid $INTERFAZ
 EOF
 
-    # --- Iniciar servicio ---
     info "Iniciando servicio dhcpd4 ..."
     systemctl daemon-reload
     systemctl enable dhcpd4 --quiet
@@ -254,7 +234,6 @@ monitorear_concesiones() {
         return
     fi
 
-    # Extraer IPs activas
     echo "  IP asignada          MAC                  Hostname"
     echo "  -----------------------------------------------------------"
     awk '
