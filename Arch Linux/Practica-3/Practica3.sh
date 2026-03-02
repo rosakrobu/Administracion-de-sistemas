@@ -1,98 +1,237 @@
 #!/bin/bash
+# ============================================
+# Script de configuracion DNS - BIND9
+# Practica 3 - Administracion de Sistemas
+# Rosa Karina Rosas Burgueno
+# ============================================
 
-# --- Verificar permisos de root ---
+VERDE='\033[0;32m'
+ROJO='\033[0;31m'
+AMARILLO='\033[1;33m'
+NC='\033[0m'
+
+ok()   { echo -e "${VERDE}[OK]${NC} $1"; }
+err()  { echo -e "${ROJO}[ERROR]${NC} $1"; }
+info() { echo -e "${AMARILLO}[INFO]${NC} $1"; }
+
+# Variable global de IP
+IP_SERVIDOR=""
+
+# ============================================
+# BLOQUE 1: Verificar root
+# ============================================
 verificar_root() {
     if [ "$EUID" -ne 0 ]; then
-        echo "ERROR: Este script debe ejecutarse como root."
-        echo "Usa: sudo bash dns_setup.sh"
+        err "Este script debe ejecutarse como root."
         exit 1
-    else
-        echo "OK: Ejecutando como root."
     fi
+    ok "Ejecutando como root."
 }
 
-# --- Verificar o configurar IP estatica ---
-verificar_ip_estatica() {
+# ============================================
+# BLOQUE 2: Detectar IP del servidor
+# ============================================
+detectar_ip() {
     echo ""
-    echo "=== Verificando IP estatica en enp0s8 ==="
+    info "Interfaces disponibles:"
+    ip -br addr show | grep -v "^lo"
+    echo ""
 
-    IP_ACTUAL=$(ip addr show enp0s8 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+    read -p "Ingresa la interfaz de red interna (ej: enp0s8): " INTERFAZ
+    IP_SERVIDOR=$(ip addr show "$INTERFAZ" 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
 
-    if [ -n "$IP_ACTUAL" ]; then
-        echo "OK: La interfaz enp0s8 ya tiene IP: $IP_ACTUAL"
-        IP_SERVIDOR=$IP_ACTUAL
-    else
-        echo "AVISO: No se encontro IP estatica en enp0s8."
-        read -p "Ingresa la IP que deseas asignar (ej: 192.168.100.10): " IP_INPUT
-        read -p "Ingresa la mascara en formato CIDR (ej: 24): " MASCARA_INPUT
+    if [ -z "$IP_SERVIDOR" ]; then
+        err "No se encontro IP en $INTERFAZ."
+        read -p "Ingresa la IP manualmente: " IP_SERVIDOR
+    fi
 
-        if [ -z "$IP_INPUT" ] || [ -z "$MASCARA_INPUT" ]; then
-            echo "ERROR: La IP o mascara no pueden estar vacias."
-            exit 1
-        fi
+    ok "IP del servidor DNS: $IP_SERVIDOR en $INTERFAZ"
+}
 
-        mkdir -p /etc/systemd/network
-        cat > /etc/systemd/network/20-static.network << EOF
-[Match]
-Name=enp0s8
+# ============================================
+# BLOQUE 3: Escribir named.conf correcto
+# ============================================
+escribir_named_conf() {
+    info "Escribiendo /etc/named.conf..."
 
-[Network]
-Address=${IP_INPUT}/${MASCARA_INPUT}
+    cat > /etc/named.conf << EOF
+// named.conf - Practica 3 DNS
+// IP Servidor: $IP_SERVIDOR
+
+options {
+    directory "/var/named";
+    pid-file "/run/named/named.pid";
+
+    // Solo IPv4, desactivar IPv6 para evitar crashes
+    listen-on port 53 { 127.0.0.1; $IP_SERVIDOR; };
+    listen-on-v6 { none; };
+
+    allow-query     { any; };
+    allow-recursion { any; };
+    allow-transfer  { any; };
+    allow-update    { none; };
+
+    // Sin DNSSEC para red interna
+    dnssec-validation no;
+
+    version none;
+    hostname none;
+    server-id none;
+};
+
+zone "localhost" IN {
+    type master;
+    file "localhost.zone";
+};
+
+zone "0.0.127.in-addr.arpa" IN {
+    type master;
+    file "127.0.0.zone";
+};
+
+zone "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa" IN {
+    type master;
+    file "localhost.ip6.zone";
+};
 EOF
 
-        systemctl enable systemd-networkd
-        systemctl restart systemd-networkd
-        sleep 2
+    # Reagregar zonas existentes conservando dominios previos
+    for ARCHIVO in /var/named/*.zone; do
+        [ -f "$ARCHIVO" ] || continue
+        ZONA=$(basename "$ARCHIVO" .zone)
+        [[ "$ZONA" == "localhost" || "$ZONA" == "127.0.0" || "$ZONA" == "localhost.ip6" ]] && continue
 
-        IP_SERVIDOR=$IP_INPUT
-        echo "OK: IP estatica $IP_SERVIDOR configurada correctamente."
+        # Actualizar IP del ns1 en el archivo de zona
+        sed -i "s/^ns1 IN  A.*/ns1 IN  A       $IP_SERVIDOR/" "$ARCHIVO"
+
+        cat >> /etc/named.conf << EOF
+
+zone "$ZONA" IN {
+    type master;
+    file "/var/named/$ZONA.zone";
+    allow-update { none; };
+};
+EOF
+        info "Zona $ZONA reagregada."
+    done
+
+    named-checkconf /etc/named.conf
+    if [ $? -ne 0 ]; then
+        err "Error en named.conf."
+        return 1
     fi
+    ok "named.conf correcto."
+    return 0
 }
 
-# --- Instalar BIND9 ---
-instalar_bind9() {
-    echo ""
-    echo "=== Instalando BIND9 ==="
+# ============================================
+# BLOQUE 4: Configurar firewall
+# ============================================
+configurar_firewall() {
+    info "Abriendo puerto 53 en firewall..."
+    iptables -C INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p udp --dport 53 -j ACCEPT
+    iptables -C INPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p tcp --dport 53 -j ACCEPT
+    ok "Puerto 53 abierto."
+}
+
+# ============================================
+# BLOQUE 5: Iniciar BIND9
+# ============================================
+iniciar_bind9() {
+    systemctl stop named 2>/dev/null
+    sleep 1
+    systemctl start named
+    sleep 2
 
     if systemctl is-active --quiet named; then
-        echo "OK: BIND9 ya esta corriendo. Se omite instalacion."
+        ok "BIND9 activo y corriendo."
+        return 0
     else
-        echo "Instalando paquetes necesarios..."
-        pacman -Sy --noconfirm bind
-
-        if [ $? -ne 0 ]; then
-            echo "ERROR: Fallo la instalacion de BIND9."
-            exit 1
-        fi
-
-        systemctl enable named
-        systemctl start named
-        echo "OK: BIND9 instalado y servicio iniciado."
+        err "BIND9 no pudo iniciarse."
+        journalctl -xeu named --no-pager | grep "error\|Error\|failed" | tail -5
+        return 1
     fi
 }
 
-# --- Configurar zona DNS ---
-configurar_zona_dns() {
+# ============================================
+# OPCION 1: Instalar y configurar BIND9
+# ============================================
+instalar_bind9() {
     echo ""
-    echo "=== Configurando zona DNS ==="
+    echo "=== Instalando y configurando BIND9 ==="
 
-    # Preguntar el dominio y la IP del cliente
-    read -p "Ingresa el nombre del dominio (ej: reprobados.com): " ZONA
-    read -p "Ingresa la IP a la que apuntara el dominio (ej: 192.168.100.30): " IP_CLIENTE
-
-    if [ -z "$ZONA" ] || [ -z "$IP_CLIENTE" ]; then
-        echo "ERROR: El dominio y la IP no pueden estar vacios."
-        exit 1
+    # Instalar si no esta
+    if ! pacman -Q bind &>/dev/null; then
+        info "Instalando bind..."
+        pacman -Sy --noconfirm bind
+        [ $? -ne 0 ] && err "Fallo instalacion." && return
+        ok "bind instalado."
+    else
+        ok "bind ya esta instalado."
     fi
 
-    ARCHIVO_ZONA="/var/named/$ZONA.zone"
-    CONF_LOCAL="/etc/named.conf"
+    # Detectar IP si no esta definida
+    [ -z "$IP_SERVIDOR" ] && detectar_ip
 
-    # Verificar si la zona ya existe
-    if grep -q "$ZONA" "$CONF_LOCAL" 2>/dev/null; then
-        echo "OK: La zona $ZONA ya existe. Se omite."
-    else
-        cat >> /etc/named.conf << EOF
+    # Escribir named.conf correcto
+    escribir_named_conf || return
+
+    # Configurar firewall
+    configurar_firewall
+
+    # Habilitar e iniciar
+    systemctl enable named --quiet
+    iniciar_bind9
+}
+
+# ============================================
+# OPCION 2: Reconfigurar DNS con IP actual
+# ============================================
+reconfigurar_dns() {
+    echo ""
+    echo "=== Reconfigurando DNS ==="
+
+    detectar_ip
+
+    escribir_named_conf || return
+
+    configurar_firewall
+
+    iniciar_bind9
+}
+
+# ============================================
+# OPCION 3: Agregar dominio
+# ============================================
+agregar_dominio() {
+    echo ""
+    echo "=== Agregar dominio ==="
+
+    # Verificar que BIND9 este corriendo, si no iniciarlo
+    if ! systemctl is-active --quiet named; then
+        info "BIND9 no esta corriendo. Iniciando..."
+        [ -z "$IP_SERVIDOR" ] && detectar_ip
+        escribir_named_conf || return
+        configurar_firewall
+        iniciar_bind9 || return
+    fi
+
+    read -p "Nombre del dominio (ej: reprobados.com): " ZONA
+    read -p "IP del cliente (ej: 192.168.100.101): " IP_CLIENTE
+
+    [ -z "$ZONA" ] || [ -z "$IP_CLIENTE" ] && err "Dominio e IP son obligatorios." && return
+
+    ARCHIVO_ZONA="/var/named/$ZONA.zone"
+
+    if grep -q "zone \"$ZONA\"" /etc/named.conf 2>/dev/null; then
+        info "El dominio $ZONA ya existe."
+        return
+    fi
+
+    # Agregar zona a named.conf
+    cat >> /etc/named.conf << EOF
 
 zone "$ZONA" IN {
     type master;
@@ -100,14 +239,9 @@ zone "$ZONA" IN {
     allow-update { none; };
 };
 EOF
-        echo "OK: Zona $ZONA agregada a named.conf"
-    fi
 
-    # Crear archivo de zona si no existe
-    if [ -f "$ARCHIVO_ZONA" ]; then
-        echo "OK: Archivo de zona ya existe. Se omite."
-    else
-        cat > "$ARCHIVO_ZONA" << EOF
+    # Crear archivo de zona
+    cat > "$ARCHIVO_ZONA" << EOF
 \$TTL 86400
 @   IN  SOA     ns1.$ZONA. admin.$ZONA. (
                 2024010101  ; Serial
@@ -123,118 +257,135 @@ EOF
 ns1 IN  A       $IP_SERVIDOR
 @   IN  A       $IP_CLIENTE
 
-; Registro CNAME para www
+; CNAME para www
 www IN  CNAME   $ZONA.
 EOF
-        chown named:named "$ARCHIVO_ZONA"
-        echo "OK: Archivo de zona creado para $ZONA"
-    fi
 
-    systemctl restart named
+    chown named:named "$ARCHIVO_ZONA"
+    chmod 640 "$ARCHIVO_ZONA"
+
+    named-checkzone "$ZONA" "$ARCHIVO_ZONA" || { err "Error en archivo de zona."; return; }
+    named-checkconf /etc/named.conf || { err "Error en named.conf."; return; }
+
+    iniciar_bind9 && ok "Dominio $ZONA → $IP_CLIENTE agregado correctamente."
 }
 
-# --- Eliminar dominio ---
-eliminar_zona_dns() {
+# ============================================
+# OPCION 4: Ver dominios
+# ============================================
+ver_dominios() {
+    echo ""
+    echo "=== Dominios configurados ==="
+
+    ZONAS=$(grep "^zone" /etc/named.conf | awk '{print $2}' | tr -d '"' | \
+        grep -v "arpa\|localhost\|example")
+
+    if [ -z "$ZONAS" ]; then
+        info "No hay dominios configurados."
+        return
+    fi
+
+    echo "Dominios encontrados:"
+    echo ""
+    CONTADOR=1
+    for ZONA in $ZONAS; do
+        ARCHIVO="/var/named/$ZONA.zone"
+        if [ -f "$ARCHIVO" ]; then
+            IP=$(grep "^@" "$ARCHIVO" | grep " A " | awk '{print $4}')
+            echo "  $CONTADOR. $ZONA → $IP"
+        else
+            echo "  $CONTADOR. $ZONA → (archivo no encontrado)"
+        fi
+        CONTADOR=$((CONTADOR + 1))
+    done
+}
+
+# ============================================
+# OPCION 5: Eliminar dominio
+# ============================================
+eliminar_dominio() {
     echo ""
     echo "=== Eliminar dominio ==="
 
-    read -p "Ingresa el dominio que deseas eliminar: " ZONA_ELIMINAR
+    ver_dominios
+    echo ""
+    read -p "Dominio a eliminar: " ZONA_ELIMINAR
 
-    if [ -z "$ZONA_ELIMINAR" ]; then
-        echo "ERROR: El dominio no puede estar vacio."
+    [ -z "$ZONA_ELIMINAR" ] && err "El dominio no puede estar vacio." && return
+
+    if ! grep -q "zone \"$ZONA_ELIMINAR\"" /etc/named.conf 2>/dev/null; then
+        err "El dominio $ZONA_ELIMINAR no existe."
         return
     fi
 
     ARCHIVO_ZONA="/var/named/$ZONA_ELIMINAR.zone"
+    [ -f "$ARCHIVO_ZONA" ] && rm -f "$ARCHIVO_ZONA" && ok "Archivo de zona eliminado."
 
-    # Eliminar el archivo de zona
-    if [ -f "$ARCHIVO_ZONA" ]; then
-        rm -f "$ARCHIVO_ZONA"
-        echo "OK: Archivo de zona $ARCHIVO_ZONA eliminado."
-    else
-        echo "AVISO: No se encontro el archivo de zona para $ZONA_ELIMINAR."
-    fi
+    sed -i "/zone \"$ZONA_ELIMINAR\"/,/};/d" /etc/named.conf
+    ok "Zona $ZONA_ELIMINAR eliminada."
 
-    # Eliminar la entrada en named.conf
-    if grep -q "$ZONA_ELIMINAR" /etc/named.conf; then
-        # Borrar el bloque completo de la zona en named.conf
-        sed -i "/zone \"$ZONA_ELIMINAR\"/,/};/d" /etc/named.conf
-        echo "OK: Zona $ZONA_ELIMINAR eliminada de named.conf"
-    else
-        echo "AVISO: No se encontro $ZONA_ELIMINAR en named.conf"
-    fi
-
-    systemctl restart named
-    echo "OK: Servicio reiniciado."
+    iniciar_bind9
 }
 
-# --- Ver estado del servicio ---
+# ============================================
+# OPCION 6: Ver estado
+# ============================================
 ver_estado() {
     echo ""
     echo "=== Estado del servicio DNS ==="
 
     if systemctl is-active --quiet named; then
-        echo "OK: BIND9 esta corriendo."
+        ok "BIND9 esta corriendo."
     else
-        echo "AVISO: BIND9 no esta corriendo."
+        err "BIND9 NO esta corriendo."
     fi
 
     echo ""
-    echo "--- Prueba de resolucion ---"
-    read -p "Ingresa el dominio a consultar (ej: reprobados.com): " DOMINIO_TEST
-    nslookup $DOMINIO_TEST 127.0.0.1
+    info "Puertos escuchando:"
+    ss -tulnp | grep named
+
+    echo ""
+    read -p "Dominio a consultar (ej: reprobados.com): " DOMINIO_TEST
+    [ -z "$DOMINIO_TEST" ] && return
+
+    echo ""
+    nslookup "$DOMINIO_TEST" "$IP_SERVIDOR"
 }
 
-# --- Cambiar dominio ---
-cambiar_dominio() {
-    echo ""
-    echo "=== Cambiar dominio ==="
-    echo "Primero eliminaremos el dominio anterior."
-    eliminar_zona_dns
-    echo ""
-    echo "Ahora configuraremos el nuevo dominio."
-    configurar_zona_dns
-}
-
+# ============================================
+# MENU PRINCIPAL
+# ============================================
 mostrar_menu() {
     echo ""
-    echo "============================================"
-    echo "   Configuracion DNS"
-    echo "============================================"
-    echo " 1. Instalar y configurar DNS"
-    echo " 2. Cambiar dominio"
-    echo " 3. Eliminar dominio"
-    echo " 4. Ver estado del servicio"
-    echo " 5. Salir"
-    echo "============================================"
+    echo "----------------------------------"
+    echo "   Configuracion DNS - BIND9"
+    echo "----------------------------------"
+    echo " 1. Instalar y configurar BIND9"
+    echo " 2. Reconfigurar DNS con IP actual"
+    echo " 3. Agregar dominio"
+    echo " 4. Ver dominios configurados"
+    echo " 5. Eliminar dominio"
+    echo " 6. Ver estado del servicio"
+    echo " 7. Salir"
+    echo "----------------------------------"
     read -p " Elige una opcion: " OPCION
 }
 
+# ============================================
+# INICIO
+# ============================================
 verificar_root
-verificar_ip_estatica
 
 while true; do
     mostrar_menu
     case $OPCION in
-        1)
-            instalar_bind9
-            configurar_zona_dns
-            ;;
-        2)
-            cambiar_dominio
-            ;;
-        3)
-            eliminar_zona_dns
-            ;;
-        4)
-            ver_estado
-            ;;
-        5)
-            echo "Saliendo..."
-            exit 0
-            ;;
-        *)
-            echo "ERROR: Opcion invalida. Elige entre 1 y 5."
-            ;;
+        1) instalar_bind9 ;;
+        2) reconfigurar_dns ;;
+        3) agregar_dominio ;;
+        4) ver_dominios ;;
+        5) eliminar_dominio ;;
+        6) ver_estado ;;
+        7) echo "Saliendo..."; exit 0 ;;
+        *) err "Opcion invalida." ;;
     esac
 done
