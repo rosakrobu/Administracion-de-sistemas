@@ -1,7 +1,6 @@
 #!/bin/bash
 # ============================================================
 # funciones_comunes.sh
-# Biblioteca de funciones utilitarias compartidas
 # Practica 4 - Administracion de Sistemas
 # Rosa Karina Rosas Burgueño
 # ============================================================
